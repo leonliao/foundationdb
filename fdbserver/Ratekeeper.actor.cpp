@@ -925,17 +925,24 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 
 		limitReason_t ssLimitReason = limitReason_t::unlimited;
 
+		//最小空间要么是配置的最小空间，要么是磁盘空间的min ratio，
+		//取最大值
 		int64_t minFreeSpace =
 		    std::max(SERVER_KNOBS->MIN_AVAILABLE_SPACE,
 		             (int64_t)(SERVER_KNOBS->MIN_AVAILABLE_SPACE_RATIO * ss.smoothTotalSpace.smoothTotal()));
 
+		//实际free的空间 - 最小要求空间 = 真正free的空间
 		worstFreeSpaceStorageServer =
 		    std::min(worstFreeSpaceStorageServer, (int64_t)ss.smoothFreeSpace.smoothTotal() - minFreeSpace);
 
+		//不理解，TODO
 		int64_t springBytes = std::max<int64_t>(
+			//真正free的20%跟limit的最小值作为springBytes
 		    1, std::min<int64_t>(limits->storageSpringBytes, (ss.smoothFreeSpace.smoothTotal() - minFreeSpace) * 0.2));
+		//targetBytes与freeSpace的最小值作为targetBytes
 		int64_t targetBytes = std::max<int64_t>(
 		    1, std::min(limits->storageTargetBytes, (int64_t)ss.smoothFreeSpace.smoothTotal() - minFreeSpace));
+		//TODO targetBytes变小了，因为targetBytes是取min取出来的
 		if (targetBytes != limits->storageTargetBytes) {
 			if (minFreeSpace == SERVER_KNOBS->MIN_AVAILABLE_SPACE) {
 				ssLimitReason = limitReason_t::storage_server_min_free_space;
@@ -944,20 +951,32 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 			}
 		}
 
+		//当前SS的队列，收到的bytes - 保存的bytes，即是队列
 		int64_t storageQueue = ss.lastReply.bytesInput - ss.smoothDurableBytes.smoothTotal();
+		//看看哪台SS服务器的保存队列是最大的
 		worstStorageQueueStorageServer = std::max(worstStorageQueueStorageServer, storageQueue);
 
+		//当前SS的未保存的版本lag = 收到的最新版本 - 已经保存的最大版本
 		int64_t storageDurabilityLag = ss.smoothLatestVersion.smoothTotal() - ss.smoothDurableVersion.smoothTotal();
+		//看看哪台服务器的lag最大
 		worstDurabilityLag = std::max(worstDurabilityLag, storageDurabilityLag);
 
+		//将某台SS的lag*-1作为key存进map，也就是取相反数
 		storageDurabilityLagReverseIndex.insert(std::make_pair(-1 * storageDurabilityLag, &ss));
 
 		auto& ssMetrics = self->healthMetrics.storageStats[ss.id];
+		//更新全局metrics信息
 		ssMetrics.storageQueue = storageQueue;
 		ssMetrics.storageDurabilityLag = storageDurabilityLag;
 		ssMetrics.cpuUsage = ss.lastReply.cpuUsage;
 		ssMetrics.diskUsage = ss.lastReply.diskUsage;
 
+		
+		// 公式等效于(storageQueue - targetBytes) / (double)springBytes + 1
+		// [(队列长度 - 可用空间(也可能是limit里面的))/ springBytes] + 1    
+		// 假如队列长度 > 可用空间, springBytes 是可用空间的0.2，
+		// 也就是以20%空间为fill bytes rate
+		// 等于看多少秒内fill掉空间的20%， 再 + 1
 		double targetRateRatio = std::min((storageQueue - targetBytes + springBytes) / (double)springBytes, 2.0);
 
 		if (limits->priority == TransactionPriority::DEFAULT &&
@@ -987,20 +1006,30 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 		        .detail("B", b);
 		}*/
 
+		// springBytes可能是弹性空间的意思，留的buffer
 		// Don't let any storage server use up its target bytes faster than its MVCC window!
+		// 0.8 可用空间 / (5 + 2)秒
+		// 也就是看以7秒fill掉空间，看每秒要多少个字节
 		double maxBytesPerSecond =
 		    (targetBytes - springBytes) /
+			//这个是5*Million/ 1 M + 2 = 7
 		    ((((double)SERVER_KNOBS->MAX_READ_TRANSACTION_LIFE_VERSIONS) / SERVER_KNOBS->VERSIONS_PER_SECOND) + 2.0);
+		// maxBytesPerSecond / inputRate等于伸缩比例， 如果rate很大
 		double limitTps = std::min(actualTps * maxBytesPerSecond / std::max(1.0e-8, inputRate),
+									//maxBytesPerSecond * 1000? 
 		                           maxBytesPerSecond * SERVER_KNOBS->MAX_TRANSACTIONS_PER_BYTE);
 		if (ssLimitReason == limitReason_t::unlimited)
 			ssLimitReason = limitReason_t::storage_server_write_bandwidth_mvcc;
 
+		//只有空间紧张，也就是storageQueue - targetBytes + springBytes < 0， targetBytes可以认为是剩余空间， springBytes是0.2*free
 		if (targetRateRatio > 0 && inputRate > 0) {
 			ASSERT(inputRate != 0);
 			double smoothedRate =
+				//难道这些都放大了1000倍吗？
 			    std::max(ss.verySmoothDurableBytes.smoothRate(), actualTps / SERVER_KNOBS->MAX_TRANSACTIONS_PER_BYTE);
+			//求伸缩比例
 			double x = smoothedRate / (inputRate * targetRateRatio);
+			//限制QPS
 			double lim = actualTps * x;
 			if (lim < limitTps) {
 				limitTps = lim;
@@ -1059,6 +1088,7 @@ void updateRate(RatekeeperData* self, RatekeeperLimits* limits) {
 			continue;
 		}
 
+		//把lag*-1，取回正常值
 		limitingDurabilityLag = -1 * ss->first;
 		if (limitingDurabilityLag > limits->durabilityLagTargetVersions &&
 		    self->actualTpsHistory.size() > SERVER_KNOBS->NEEDED_TPS_HISTORY_SAMPLES) {

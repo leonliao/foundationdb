@@ -132,10 +132,15 @@ struct DatabaseConfiguration {
 	int expectedLogSets(Optional<Key> dcId) const {
 		int result = 1;
 		if (dcId.present() && getRegion(dcId.get()).satelliteTLogReplicationFactor > 0 && usableRegions > 1) {
+			//LEON dcId存在，而且dcid的日志复制(satellite_logs > 0，意味着要在satellite存一份), 
+			// usableRegions(cli 配置)>1意味着要保证两个region 可用，即需要satellite log上存多一份
+			//则加一
 			result++;
 		}
 
 		if (usableRegions > 1) {
+			//如果有satellite，并且要求两个region以上，那么需要3个log set
+			//REMOTE需要一份
 			result++;
 		}
 		return result;

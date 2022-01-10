@@ -607,6 +607,7 @@ struct ProxyCommitData {
 	uint64_t commitVersionRequestNumber;
 	uint64_t mostRecentProcessedRequestNumber;
 	KeyRangeMap<Deque<std::pair<Version, int>>> keyResolvers;
+	//Leon keyrange->到SS的mapping
 	KeyRangeMap<ServerCacheInfo> keyInfo; // keyrange -> all storage servers in all DCs for the keyrange
 	KeyRangeMap<bool> cacheInfo;
 	std::map<Key, applyMutationsData> uid_applyMutationsData;
@@ -1624,6 +1625,7 @@ ACTOR Future<Void> commitBatch(ProxyCommitData* self,
 
 	state double commitStartTime = now();
 	self->lastStartCommit = commitStartTime;
+	//Leon 推到transaction log
 	Future<Version> loggingComplete = self->logSystem->push(
 	    prevVersion, commitVersion, self->committedVersion.get(), self->minKnownCommittedVersion, toCommit, debugID);
 

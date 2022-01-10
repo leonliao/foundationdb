@@ -1065,7 +1065,11 @@ public:
 
 	RecruitFromConfigurationReply findWorkersForConfiguration(RecruitFromConfigurationRequest const& req) {
 		if (req.configuration.regions.size() > 1) {
+			//如果多个region
 			std::vector<RegionInfo> regions = req.configuration.regions;
+			//如果region优先级相等，region[1]是自己的region，将region[0]变为自己region
+			//也就是regions[0]就是cluster controller所在的region
+			//为什么允许多个region的priority是相同的？
 			if (regions[0].priority == regions[1].priority && regions[1].dcId == clusterControllerDcId.get()) {
 				std::swap(regions[0], regions[1]);
 			}
@@ -1073,6 +1077,7 @@ public:
 			if (regions[1].dcId == clusterControllerDcId.get() &&
 			    (!versionDifferenceUpdated || datacenterVersionDifference >= SERVER_KNOBS->MAX_VERSION_DIFFERENCE)) {
 				if (regions[1].priority >= 0) {
+					//如果数据中心之间的difference大过某个值，将region[0]变为自己region
 					std::swap(regions[0], regions[1]);
 				} else {
 					TraceEvent(SevWarnAlways, "CCDcPriorityNegative")
